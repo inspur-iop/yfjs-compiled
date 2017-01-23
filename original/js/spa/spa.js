@@ -626,241 +626,247 @@ define('yfjs/spa/app', [
                 'CallbackError', 'WidgetError', 'IncludeError',
                 'TemplateError', 'AjaxError', 'WebSocketError', 'CookieError'
             ].join(' '), function(e, err, resLoad) {
-                // 每 30ms 处理一次错误信息
-                var timestamp = new Date().getTime();
-                if (self.__err_stime__) {
-                    var dtime = (timestamp - self.__err_stime__) || self.__err_frame__;
-                    if (dtime < self.__err_frame__) {
-                        _.concatError(self.__err_buffer__, err);
-                        return this;
-                    } else {
-                        var errPiece = self.__err_buffer__.splice(0, self.__err_buffer__.length);
-                        err = _.concatError(errPiece, err);
+                // 每 app.__err_frame__(30ms) 间隔时间处理一次错误信息
+                var nowTime = new Date().getTime();
+                if (!self.__err_stime__) {
+                    _.def(self, '__err_stime__', nowTime);
+                }
+                var dTime = nowTime - self.__err_stime__;
+                if (dTime == 0 || dtime <= self.__err_frame__) {
+                    var errBuffer = _.concatError(self.__err_buffer__, err),
+                        errBufferArgs = [0, self.__err_buffer__.length];
+                    errBufferArgs = errBufferArgs.concat(errBuffer);
+                    self.__err_buffer__.splice.apply(self.__err_buffer__, errBufferArgs);
+                    if (dTime == 0) {
+                        _.requestAnimationFrame(handleError, [], self.__err_frame__);
                     }
                 }
-                _.def(self, '__err_stime__', timestamp);
-                // error filter
-                err = callErrorFilter(err);
-                // init page error
-                var errPage = _.sliceError(err, {level: View.Error.LEVEL_PAGE}),
-                    errOther = _.shiftError(err, errPage);
-                if (!_.isEmpty(errPage) && _.isEmpty(errOther)) {
+                function handleError() {
+                    _.def(self, '__err_stime__', 0);
+                    var err = self.__err_buffer__.splice(0, self.__err_buffer__.length);
+                    // error filter
+                    err = callErrorFilter(err);
+                    // init page error
+                    var errPage = _.sliceError(err, {level: View.Error.LEVEL_PAGE}),
+                        errOther = _.shiftError(err, errPage);
+                    if (!_.isEmpty(errPage) && _.isEmpty(errOther)) {
 
-                    logError(err);
+                        logError(err);
 
-                    // throw to error page
-                    var errReported = err;
+                        // throw to error page
+                        var errReported = err;
 
-                    var errOptions = appInst.callOption('error');
+                        var errOptions = appInst.callOption('error');
 
-                    if (Remote.instanceof(errOptions)) {
-                        errOptions = errOptions.get();
-                        if (!_.isEmpty(errOptions) && !_.isObject(errOptions)) {
-                            errOptions = {path: _.trim(errOptions)};
+                        if (Remote.instanceof(errOptions)) {
+                            errOptions = errOptions.get();
+                            if (!_.isEmpty(errOptions) && !_.isObject(errOptions)) {
+                                errOptions = {path: _.trim(errOptions)};
+                            }
                         }
-                    }
 
-                    if (!_.isEmpty(errOptions)) {
-                        if (_.isObject(errOptions)) {
-                            if (errOptions.path) {
-                                View.load(errOptions, function(err, res) {
-                                    if (View.instanceof(res)) {
-                                        loadError(res, errReported);
+                        if (!_.isEmpty(errOptions)) {
+                            if (_.isObject(errOptions)) {
+                                if (errOptions.path) {
+                                    View.load(errOptions, function(err, res) {
+                                        if (View.instanceof(res)) {
+                                            loadError(res, errReported);
+                                        } else {
+                                            renderErrHtml(_.concatError(err, errReported));
+                                        }
+                                    });
+                                } else {
+                                    errOptions.path = "error";
+                                    errOptions.layout = errOptions.layout || null;
+                                    loadError(
+                                        new View.Constructor(
+                                            new View.Creator(
+                                                View.create(errOptions, View), View
+                                            ), View
+                                        ),
+                                        errReported
+                                    );
+                                }
+                            } else {
+                                errOptions = _.trim(errOptions);
+                                self.template.render(errOptions, {error: errReported}, function(err, htmlText) {
+                                    if (!_.isUndef(htmlText)) {
+                                        renderErrHtml(htmlText);
                                     } else {
                                         renderErrHtml(_.concatError(err, errReported));
                                     }
                                 });
-                            } else {
-                                errOptions.path = "error";
-                                errOptions.layout = errOptions.layout || null;
-                                loadError(
-                                    new View.Constructor(
-                                        new View.Creator(
-                                            View.create(errOptions, View), View
-                                        ), View
-                                    ),
-                                    errReported
-                                );
                             }
                         } else {
-                            errOptions = _.trim(errOptions);
-                            self.template.render(errOptions, {error: errReported}, function(err, htmlText) {
-                                if (!_.isUndef(htmlText)) {
-                                    renderErrHtml(htmlText);
-                                } else {
-                                    renderErrHtml(_.concatError(err, errReported));
-                                }
-                            });
+                            renderErrHtml();
+                        }
+
+                        function loadError(errView, error) {
+                            if (View.instanceof(errView)) {
+                                errView.setData('$error', error);
+                                errView.load(function(err, res) {
+                                    if (!_.isEmpty(err)) {
+                                        err = _.concatError(err, error);
+                                        renderErrHtml(err);
+                                    } else {
+                                        // render error view
+                                        res = res || {};
+                                        res.error = true;
+                                        App.Event.trigger('Loaded', res);
+                                    }
+                                });
+                            }
+                        }
+
+                        function renderErrHtml(err, html) {
+                            if (_.isString(err)) {
+                                html = err;
+                                err = errReported;
+                            } else {
+                                err = err || errReported;
+                            }
+
+                            var res = {
+                                view: false, layout: false
+                            };
+
+                            if (_.isUndef(html)) {
+                                html = self.defaultErrorHtml(err);
+                            }
+
+                            html = Route.View.wrap()(html);
+
+                            if (Layout.updateWrap()) {
+                                res.container = Layout.CONTAINER;
+                            } else {
+                                html = Layout.wrap()(html);
+                            }
+
+                            res.html = html;
+
+                            res.error = true;
+
+                            App.Event.trigger('Loaded', res);
                         }
                     } else {
-                        renderErrHtml();
-                    }
-
-                    function loadError(errView, error) {
-                        if (View.instanceof(errView)) {
-                            errView.setData('$error', error);
-                            errView.load(function(err, res) {
-                                if (!_.isEmpty(err)) {
-                                    err = _.concatError(err, error);
-                                    renderErrHtml(err);
-                                } else {
-                                    // render error view
-                                    res = res || {};
-                                    res.error = true;
-                                    App.Event.trigger('Loaded', res);
-                                }
-                            });
+                        // init widget error
+                        var errWidget = _.sliceError(err, {level: View.Error.LEVEL_WIDGET});
+                        if (!_.isEmpty(errWidget)) {
+                            errWidget = callOnError(errWidget);
                         }
-                    }
-
-                    function renderErrHtml(err, html) {
-                        if (_.isString(err)) {
-                            html = err;
-                            err = errReported;
-                        } else {
-                            err = err || errReported;
+                        if (!_.isEmpty(errWidget)) {
+                            errWidget = callOnErrorOption(errWidget);
                         }
-
-                        var res = {
-                            view: false, layout: false
-                        };
-
-                        if (_.isUndef(html)) {
-                            html = self.defaultErrorHtml(err);
+                        // init app error
+                        var errApp = _.sliceError(err, {level: View.Error.LEVEL_APP});
+                        if (!_.isEmpty(errWidget)) {
+                            errApp = _.concatError(errApp, errWidget);
                         }
-
-                        html = Route.View.wrap()(html);
-
-                        if (Layout.updateWrap()) {
-                            res.container = Layout.CONTAINER;
-                        } else {
-                            html = Layout.wrap()(html);
+                        if (!_.isEmpty(errApp)) {
+                            appInst.addError(errApp);
+                            errApp = callOnErrorOption(errApp, appInst);
                         }
+                        // 处理 include 类型的错误
+                        if (!_.isEmpty(errApp)) {
+                            resLoad = resLoad || {};
 
-                        res.html = html;
-
-                        res.error = true;
-
-                        App.Event.trigger('Loaded', res);
-                    }
-                } else {
-                    // init widget error
-                    var errWidget = _.sliceError(err, {level: View.Error.LEVEL_WIDGET});
-                    if (!_.isEmpty(errWidget)) {
-                        errWidget = callOnError(errWidget);
-                    }
-                    if (!_.isEmpty(errWidget)) {
-                        errWidget = callOnErrorOption(errWidget);
-                    }
-                    // init app error
-                    var errApp = _.sliceError(err, {level: View.Error.LEVEL_APP});
-                    if (!_.isEmpty(errWidget)) {
-                        errApp = _.concatError(errApp, errWidget);
-                    }
-                    if (!_.isEmpty(errApp)) {
-                        appInst.addError(errApp);
-                        errApp = callOnErrorOption(errApp, appInst);
-                    }
-                    // 处理 include 类型的错误
-                    if (!_.isEmpty(errApp)) {
-                        resLoad = resLoad || {};
-
-                        var errIncludes = _.sliceError(errApp, {
-                            __caller_name__: /^(view|layout)\.include/
-                        });
-
-                        if (!_.isEmpty(errIncludes)) {
-                            var errIncludesMap = {},
-                                renderIncludes = {},
-                                bodyKey;
-
-                            $.each(errIncludes, function(i, err) {
-                                if (err.state && (bodyKey = err.state.body)) {
-                                    errIncludesMap[bodyKey] = _.concatError(
-                                        errIncludesMap[bodyKey], err
-                                    );
-                                }
+                            var errIncludes = _.sliceError(errApp, {
+                                __caller_name__: /^(view|layout)\.include/
                             });
 
-                            for (bodyKey in errIncludesMap) {
-                                renderIncludes[bodyKey] = self.defaultErrorHtml(errIncludesMap[bodyKey]);
-                            }
+                            if (!_.isEmpty(errIncludes)) {
+                                var errIncludesMap = {},
+                                    renderIncludes = {},
+                                    bodyKey;
 
-                            if (!_.isUndef(resLoad.html)) {
-                                var template;
-                                if (resLoad.layout) {
-                                    template = resLoad.layout.template;
-                                } else if (resLoad.view) {
-                                    template = resLoad.view.template;
-                                } else {
-                                    template = self.template;
+                                $.each(errIncludes, function(i, err) {
+                                    if (err.state && (bodyKey = err.state.body)) {
+                                        errIncludesMap[bodyKey] = _.concatError(
+                                            errIncludesMap[bodyKey], err
+                                        );
+                                    }
+                                });
+
+                                for (bodyKey in errIncludesMap) {
+                                    renderIncludes[bodyKey] = self.defaultErrorHtml(errIncludesMap[bodyKey]);
                                 }
 
-                                var html = template.render(resLoad.html, renderIncludes);
+                                if (!_.isUndef(resLoad.html)) {
+                                    var template;
+                                    if (resLoad.layout) {
+                                        template = resLoad.layout.template;
+                                    } else if (resLoad.view) {
+                                        template = resLoad.view.template;
+                                    } else {
+                                        template = self.template;
+                                    }
 
-                                if (_.isString(html)) {
-                                    resLoad.html = html;
+                                    var html = template.render(resLoad.html, renderIncludes);
+
+                                    if (_.isString(html)) {
+                                        resLoad.html = html;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    logError(err);
+                        logError(err);
 
-                    if (!_.isEmpty(resLoad)) {
-                        resLoad.view = resLoad.view || false;
-                        resLoad.layout = resLoad.layout || false;
-                        App.Event.trigger('Loaded', resLoad);
+                        if (!_.isEmpty(resLoad)) {
+                            resLoad.view = resLoad.view || false;
+                            resLoad.layout = resLoad.layout || false;
+                            App.Event.trigger('Loaded', resLoad);
+                        }
                     }
                 }
             });
 
             Cookie.Event.bind('Error', function(e, err) {
-                App.Event.trigger('CookieError', err);
+                App.Event.trigger('CookieError', _.isArray(err) ? [err] : err);
             });
 
             Loading.Event.bind('Error', function(e, err) {
-                App.Event.trigger('LoadingError', err);
+                App.Event.trigger('LoadingError', _.isArray(err) ? [err] : err);
             });
 
             Filter.Event.bind('Error', function(e, err) {
-                App.Event.trigger('FilterError', err);
+                App.Event.trigger('FilterError', _.isArray(err) ? [err] : err);
             });
 
             Template.Event.bind('Error', function(e, err) {
-                App.Event.trigger('TemplateError', err);
+                App.Event.trigger('TemplateError', _.isArray(err) ? [err] : err);
             });
 
             Template.Event.bind('CallbackError', function(e, err) {
-                App.Event.trigger('CallbackError', err);
+                App.Event.trigger('CallbackError', _.isArray(err) ? [err] : err);
             });
 
             Ajax.Event.bind('Error', function(e, err) {
-                App.Event.trigger('AjaxError', err);
+                App.Event.trigger('AjaxError', _.isArray(err) ? [err] : err);
             });
 
             WebSocket.Event.bind('Error', function(e, err) {
-                App.Event.trigger('WebSocketError', err);
+                App.Event.trigger('WebSocketError', _.isArray(err) ? [err] : err);
             });
 
             View.Event.bind('Error', function(e, err) {
-                App.Event.trigger('WidgetError', err);
+                App.Event.trigger('WidgetError', _.isArray(err) ? [err] : err);
             });
 
             Layout.Event.bind('Error', function(e, err) {
-                App.Event.trigger('WidgetError', err);
+                App.Event.trigger('WidgetError', _.isArray(err) ? [err] : err);
             });
 
             View.Event.bind('IncludeError', function(e, err) {
-                App.Event.trigger('IncludeError', err);
+                App.Event.trigger('IncludeError', _.isArray(err) ? [err] : err);
             });
 
             Layout.Event.bind('IncludeError', function(e, err) {
-                App.Event.trigger('IncludeError', err);
+                App.Event.trigger('IncludeError', _.isArray(err) ? [err] : err);
             });
 
             Route.Event.bind('CallbackError', function(e, err) {
-                App.Event.trigger('CallbackError', err);
+                App.Event.trigger('CallbackError', _.isArray(err) ? [err] : err);
             });
 
             function callErrorFilter(err) {
@@ -5105,6 +5111,59 @@ define('yfjs/spa/util/helpers', (function(root) {
         return retValue;
     };
 
+    /**
+     * 模拟 requestAnimationFrame
+     * @param callback {Function} 回调函数
+     * @param args     {Array}    可选。回调函数参数
+     * @param period   {Number}   可选。触发时间，单位毫秒(ms)，默认为 1000/60
+     * @returns {requestAnimationFrame.context}
+     */
+    var requestAnimationFrame = function(callback, args, period) {
+
+        if (typeof callback !== "function") return this;
+
+        if (arguments.length < 3) {
+            if (typeof args === "number") {
+                period = args;
+            }
+        }
+
+        args = normalizeArgs(args);
+        period = normalizePeriod(period);
+
+        (function(self, args, period) {
+            setTimeout(function() {
+                callback.apply(self, args);
+            }, period);
+        })(this, args, period);
+
+        function normalizeArgs(args) {
+            var _args;
+            if (otype(args) !== "array") {
+                if (typeof args === "undefined") {
+                    _args = [];
+                } else {
+                    _args = [args];
+                }
+            } else {
+                _args = args;
+            }
+            return _args;
+        }
+
+        function normalizePeriod(period) {
+            if (typeof period !== "number" || !period) {
+                period = 1000 / 60;
+            }
+            if (period < 0) {
+                period = 0;
+            }
+            return period;
+        }
+
+        return this;
+    };
+
     var _ = {
         // vars
         __undef__: __undef__,
@@ -5609,6 +5668,7 @@ define('yfjs/spa/util/helpers', (function(root) {
             return o;
         },
         copyValue: copyValue,
+        requestAnimationFrame: requestAnimationFrame,
         // regexp
         REGEXP_PROTOCOL_START        : REGEXP_PROTOCOL_START,
         REGEXP_SECURE_PROTOCOL_START : REGEXP_SECURE_PROTOCOL_START,
@@ -15319,30 +15379,33 @@ define('yfjs/spa/util/widget', [
             (function(def, bRenderSelf, url, source, data, dataFilter, callback) {
 
                 def.done(function(err, htmlText, data, source) {
-                    err = _.setPropsRecursive(err, props);
+                    var args = _.__aslice.call(arguments);
+                    _.requestAnimationFrame(function(err, htmlText, data, source) {
+                        err = _.setPropsRecursive(err, props);
 
-                    self.addError(err);
+                        self.addError(err);
 
-                    var errs;
+                        var errs;
 
-                    if (_.isFunction(callback)) {
-                        try {
-                            callback.apply(self, arguments);
-                            _.normalizeCallbackArgs(callback, arguments);
-                        } catch (e) {
-                            var cbErr = _.setPropsRecursive(
-                                self.makeError('callback', [self.getPath(), 'render callback', e.message], e),
-                                props
-                            );
-                            self.addError(cbErr);
+                        if (_.isFunction(callback)) {
+                            try {
+                                callback.apply(self, arguments);
+                                _.normalizeCallbackArgs(callback, arguments);
+                            } catch (e) {
+                                var cbErr = _.setPropsRecursive(
+                                    self.makeError('callback', [self.getPath(), 'render callback', e.message], e),
+                                    props
+                                );
+                                self.addError(cbErr);
+                            }
                         }
-                    }
 
-                    errs = self.getError(tempProps);
+                        errs = self.getError(tempProps);
 
-                    if (!_.isEmpty(errs) && self.afterState('beforeLoad')) {
-                        widget.Event.trigger('Error', errs);
-                    }
+                        if (!_.isEmpty(errs) && self.afterState('beforeLoad')) {
+                            widget.Event.trigger('Error', errs);
+                        }
+                    }, args);
                 });
 
                 var defData = $.Deferred(), defTpl = $.Deferred();
@@ -15368,6 +15431,8 @@ define('yfjs/spa/util/widget', [
                     } else {
                         filteredData = argsData[1];
                     }
+
+                    self.removeError(err);
 
                     var renderData = Template.normalizeData(filteredData);
 

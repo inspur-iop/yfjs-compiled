@@ -12753,13 +12753,20 @@ if (typeof jQuery === 'undefined') {
         // Change + to %20, the %20 is fixed up later with the decode
         params = params.replace(/\+/g, '%20');
         // Do we have JSON string
-        if ( params.substring(0,1) === '{' && params.substring(params.length-1) === '}' ) {
+        if ( likeJSON(params) ) {
             // We have a JSON string
-            return eval(decodeURIComponent(params));
+            try {
+                return eval(decodeURIComponent(params));
+            } catch (e) {
+                // not a valid json string
+            }
         }
         // We have a params string
         params = params.split(/\&(amp\;)?/);
-        var json = {}, objRegExp = new RegExp('\\[([^\\]]*)\\]', "g"), digitRegExp = /^\d+$/, posEq;
+        var objRegExp = new RegExp('\\[([^\\]]*)\\]', "g"),
+            digitRegExp = /^\d+$/,
+            numberRegExp = /^\s*\d*(\.\d*)?\s*$/;
+        var json = {}, posEq;
         // We have params
         for ( var i = 0, n = params.length; i < n; ++i ) {
             // Adjust
@@ -12787,15 +12794,29 @@ if (typeof jQuery === 'undefined') {
             // Fix
             key = decodeURIComponent(encodeURIComponent(key));
             value = decodeURIComponent(encodeURIComponent(value));
-            try {
-                // value can be converted
-                value = eval(value);
-            } catch ( e ) {
-                // value is a normal string
+
+            // Parse
+            var trimVal = typeof value === 'string' ? value.replace(/(^\s*)|(\s*$)/g, '') : value;
+            if (
+                // number
+                numberRegExp.test(trimVal)
+                // true|false
+                || trimVal === "true" || trimVal === "false"
+                // json string
+                || likeJSON(trimVal)
+                // array string
+                || likeArray(trimVal)
+            ) {
+                try {
+                    // value can be converted
+                    value = eval(trimVal);
+                } catch ( e ) {
+                    // value is a normal string
+                }
             }
 
             // 消除eval时执行document.getElementById方法返回DOM的问题
-            if (typeof value === "object" && undefined !== value.nodeType) {
+            if (typeof value === "object" && value.nodeType != null) {
                 if (value.nodeType == 3) {
                     value = value.nodeValue;
                 } else {
@@ -12856,6 +12877,14 @@ if (typeof jQuery === 'undefined') {
         }
         return json;
     };
+
+    function likeJSON(s) {
+        return /^\{/.test(s) && /\}$/.test(s);
+    }
+
+    function likeArray(s) {
+        return /^\[/.test(s) && /\]$/.test(s);
+    }
 }(jQuery);
 /* ========================================================================
  * Bootstrap: transition.js v3.3.4
@@ -14784,7 +14813,7 @@ if (typeof jQuery === 'undefined') {
         remarkable: '1.6.0',
         'es5-shim': '4.5.9',
         yfjs: {
-            spa: '1.0.0-beta+20170118'
+            spa: '1.0.0-beta+20170123'
         }
     };
 
