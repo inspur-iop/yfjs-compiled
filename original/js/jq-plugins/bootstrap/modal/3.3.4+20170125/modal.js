@@ -80,6 +80,9 @@
  *
  * Updated by 靳志凯 @ 2017-01-13
  * alert形式的弹出框的"确定"按钮添加了 btn-primary 样式
+ *
+ * Updated by 靳志凯 @ 2017-01-25
+ * 完善了 message 配置项处理，message 配置项为 Promise 对象时，同 remote 设置
  * =========================================================
  */
 
@@ -118,6 +121,16 @@ define(['jquery'], function ($) {
 
     var isImageSrc = function(src) {
         return typeof src === "string" && /\.(gif|png|jpg|jpeg|bmp)]$/i.test(src);
+    };
+
+    var isPromise = function(o) {
+        if (!o || typeof(o) !== "object") return false;
+        return (
+            typeof(o.done) === "function"
+            && typeof(o.fail) === "function"
+            && typeof(o.then) === "function"
+            && typeof(o.always) === "function"
+        );
     };
 
     // MODAL CLASS DEFINITION
@@ -238,7 +251,7 @@ define(['jquery'], function ($) {
                     that.$element.addClass('bottom');
             }
 
-            that.handleRemote();
+            that.handleRemote(_relatedTarget);
 
             that.$element
                 .show()
@@ -267,8 +280,6 @@ define(['jquery'], function ($) {
 
             that.enforceFocus();
 
-            var e = $.Event('shown.bs.modal', { relatedTarget: _relatedTarget });
-
             var onShown = function() {
                 that.showDeferred.resolve();
                 if(!that.$backdrop) {
@@ -276,7 +287,11 @@ define(['jquery'], function ($) {
                     that.releaseBody();
                     that.resetScrollbar();
                 }
-                that.$element.trigger('focus').trigger(e);
+                var messageOpt = that.relatedDialog ? that.relatedDialog.options.message : that.options.message;
+                if (!isPromise(messageOpt)) {
+                    var e = $.Event('shown.bs.modal', { relatedTarget: _relatedTarget });
+                    that.$element.trigger('focus').trigger(e);
+                }
             };
 
             transition ?
@@ -339,97 +354,99 @@ define(['jquery'], function ($) {
 
     Modal.prototype.remoteOptions = function(options) {
         options = options || this.options;
+        var remoteDefaults = {
+            url: null,
+            data: null,
+            callback: null,
+            promise: null,
+            loader: {
+                size: 32,
+                beginFrame: 1,
+                delay: 150
+            }
+        };
         var remote = null;
         if (options.remote) {
-            var remoteDefaults = {
-                url: null,
-                data: null,
-                callback: null,
-                promise: null,
-                loader: {
-                    size: 32,
-                    beginFrame: 1,
-                    delay: 150
-                }
-            };
             if(typeof options.remote === "function") {
                 options.remote = options.remote(this.relatedDialog || this);
             }
             if(typeof options.remote === "string") {
                 remote = $.extend({}, remoteDefaults, {url: options.remote});
-            } else if(isPlainObject(options.remote)) {
-                if(typeof options.remote.always === "function") {
-                    remote = $.extend({}, remoteDefaults, {promise: options.remote});
-                } else if(options.remote.url) {
-                    remote = $.extend({}, remoteDefaults, options.remote);
-                    if(isPlainObject(options.remote.loader)) {
-                        remote.loader = $.extend({}, remoteDefaults.loader, options.remote.loader);
-                    }
+            } else if(isPromise(options.remote)) {
+                remote = $.extend({}, remoteDefaults, {promise: options.remote});
+            } else if(options.remote && options.remote.url != null) {
+                remote = $.extend({}, remoteDefaults, options.remote);
+                if(isPlainObject(options.remote.loader)) {
+                    remote.loader = $.extend({}, remoteDefaults.loader, options.remote.loader);
+                }
+            }
+        } else {
+            var messageOpt = this.relatedDialog ? this.relatedDialog.options.message : options.message;
+            if (isPromise(messageOpt)) {
+                remote = $.extend({}, remoteDefaults, {promise: messageOpt});
+            }
+        }
+        if(remote != null) {
+            remote.renderTo = this.$element.find('.modal-body:first');
+            remote.renderTo.length <= 0 && (remote.renderTo = this.$dialog);
+
+            var $loader;
+            if(remote.loader && typeof remote.loader === "string") {
+                if(isImageSrc(remote.loader)) {
+                    $loader = $('<div class="loader"><img src="'+remote.loader+'" alt="Loading..."/></div>');
+                } else {
+                    $loader = $('<div class="'+remote.loader+'"></div>');
+                }
+            } else {
+                $loader = $('<div class="loader" data-frame="'+remote.loader.beginFrame+'" data-delay="'+remote.loader.delay+'"></div>').css({ margin: '0 auto' });
+                if(typeof remote.loader.size !== "number" || remote.loader.size <= 0) {
+                    remote.loader.size = remoteDefaults.loader.size;
+                }
+                $loader.css({
+                    fontSize: remote.loader.size + 'px',
+                    width: remote.loader.size + 'px',
+                    height: remote.loader.size + 'px'
+                });
+            }
+            remote.loader = $loader;
+
+            remote.context = this.relatedDialog || this;
+
+            var ajaxExcludes = ['callback', 'loader', 'renderTo', 'context', 'promise'],
+                ajaxSettings = $.extend({}, remote);
+
+            for(var i in ajaxExcludes) {
+                var optName = ajaxExcludes[i];
+                delete ajaxSettings[optName];
+            }
+
+            for(var index in remote) {
+                if($.inArray(index, ajaxExcludes) == -1) {
+                    delete remote[index];
                 }
             }
 
-            if(remote) {
-                remote.renderTo = this.$element.find('.modal-body:first');
-                remote.renderTo.length <= 0 && (remote.renderTo = this.$dialog);
-
-                var $loader;
-                if(remote.loader && typeof remote.loader === "string") {
-                    if(isImageSrc(remote.loader)) {
-                        $loader = $('<div class="loader"><img src="'+remote.loader+'" alt="Loading..."/></div>');
-                    } else {
-                        $loader = $('<div class="'+remote.loader+'"></div>');
+            if(ajaxSettings.url) {
+                remote.ajaxSettings = $.extend({}, ajaxSettings, {
+                    async: true,
+                    relatedContext: this,
+                    beforeSend: function(xhr, settings) {
+                        var modal = settings.relatedContext;
+                        try {
+                            modal.remote.renderTo.empty().append(modal.remote.loader);
+                            if(modal.remote.loader.is(".loader") && modal.remote.loader.attr('data-frame')) {
+                                modal.remote.loader.loader();
+                            }
+                        } catch (e) {}
+                        typeof modal.remote.beforeSend === "function" && modal.remote.beforeSend.call(modal.remote, xhr, settings);
                     }
-                } else {
-                    $loader = $('<div class="loader" data-frame="'+remote.loader.beginFrame+'" data-delay="'+remote.loader.delay+'"></div>').css({ margin: '0 auto' });
-                    if(typeof remote.loader.size !== "number" || remote.loader.size <= 0) {
-                        remote.loader.size = remoteDefaults.loader.size;
-                    }
-                    $loader.css({
-                        fontSize: remote.loader.size + 'px',
-                        width: remote.loader.size + 'px',
-                        height: remote.loader.size + 'px'
-                    });
-                }
-                remote.loader = $loader;
-
-                remote.context = this.relatedDialog || this;
-
-                var ajaxExcludes = ['callback', 'loader', 'renderTo', 'context', 'promise'],
-                    ajaxSettings = $.extend({}, remote);
-
-                for(var i in ajaxExcludes) {
-                    var optName = ajaxExcludes[i];
-                    delete ajaxSettings[optName];
-                }
-
-                for(var index in remote) {
-                    if($.inArray(index, ajaxExcludes) == -1) {
-                        delete remote[index];
-                    }
-                }
-
-                if(ajaxSettings.url) {
-                    remote.ajaxSettings = $.extend({}, ajaxSettings, {
-                        async: true,
-                        relatedContext: this,
-                        beforeSend: function(xhr, settings) {
-                            var modal = settings.relatedContext;
-                            try {
-                                modal.remote.renderTo.empty().append(modal.remote.loader);
-                                if(modal.remote.loader.is(".loader") && modal.remote.loader.attr('data-frame')) {
-                                    modal.remote.loader.loader();
-                                }
-                            } catch (e) {}
-                            typeof modal.remote.beforeSend === "function" && modal.remote.beforeSend.call(modal.remote, xhr, settings);
-                        }
-                    });
-                }
+                });
             }
         }
         return remote;
     };
 
-    Modal.prototype.handleRemote = function(xhr) {
+    Modal.prototype.handleRemote = function(_relatedTarget) {
         var that = this;
         var remoteHandler = function() {
             var args = arguments[0], responses = [], status, response, xhr;
@@ -491,9 +508,14 @@ define(['jquery'], function ($) {
                     modal.remote.renderTo.empty().append(renderHtml);
                 }
             }
-            var e = $.Event('loaded.bs.modal');
             modal.adjustPosition();
-            modal.$element.data('loaded.bs.modal', { remote: modal.remote, response: responses.length ? responses : response, status: status, xhr: xhr }).trigger(e);
+            var messageOpt = that.relatedDialog ? that.relatedDialog.options.message : that.options.message;
+            if (isPromise(messageOpt)) {
+                var evtShown = $.Event('shown.bs.modal', { relatedTarget: _relatedTarget });
+                that.$element.trigger('focus').trigger(evtShown);
+            }
+            var evtLoaded = $.Event('loaded.bs.modal');
+            modal.$element.data('loaded.bs.modal', { remote: modal.remote, response: responses.length ? responses : response, status: status, xhr: xhr }).trigger(evtLoaded);
         };
         if (this.remote) {
             if (this.remote.promise || this.remote.ajaxSettings) {

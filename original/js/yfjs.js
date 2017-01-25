@@ -14768,7 +14768,7 @@ if (typeof jQuery === 'undefined') {
             datetimepicker: '3.0.0',
             daterangepicker: '2.0.8',
             clockpicker: '0.0.7',
-            modal: '3.3.4+20170113',
+            modal: '3.3.4+20170125',
             paging: '1.0.2+20161114',
             popover: '3.3.4+20150609',
             slider: '4.5.6',
@@ -14813,7 +14813,7 @@ if (typeof jQuery === 'undefined') {
         remarkable: '1.6.0',
         'es5-shim': '4.5.9',
         yfjs: {
-            spa: '1.0.0-beta+20170123'
+            spa: '1.0.0-beta+20170124'
         }
     };
 

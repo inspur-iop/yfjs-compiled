@@ -638,10 +638,11 @@ define('yfjs/spa/app', [
                     errBufferArgs = errBufferArgs.concat(errBuffer);
                     self.__err_buffer__.splice.apply(self.__err_buffer__, errBufferArgs);
                     if (dTime == 0) {
-                        _.requestAnimationFrame(handleError, [], self.__err_frame__);
+                        _.requestAnimationFrame.call(self, handleError, [], self.__err_frame__);
                     }
                 }
                 function handleError() {
+                    var self = this;
                     _.def(self, '__err_stime__', 0);
                     var err = self.__err_buffer__.splice(0, self.__err_buffer__.length);
                     // error filter
@@ -10619,31 +10620,46 @@ define('yfjs/spa/util/template', [
         includeIndex: function(includeKey) {
             var index = 1;
             if (!_.isEmpty(includeKey)) {
-                var pos;
-                if ((pos = this.includePromisePos(includeKey)) > -1) {
-                    var includePromise = this.__include_promise__[pos] || {};
+                var i, pos, includePromise;
+                if ((pos = this.getIncludePromisePos(includeKey)) > -1) {
+                    index = 0;
+                    for (i=0; i<pos; i++) {
+                        includePromise = this.__include_promise__[i] || {};
+                        if (_.isNumber(includePromise.len)) {
+                            index += includePromise.len;
+                        } else {
+                            index += 1;
+                        }
+                    }
+                    includePromise = this.__include_promise__[pos] || {};
                     if (_.isArray(includePromise.promise)) {
-                        index = includePromise.promise.length + 1;
+                        index += (includePromise.promise.length + 1);
                     } else {
-                        index = 1;
+                        index += 1;
                     }
                 } else {
-                    pos = 0;
-                    index = this.__include_promise__.length + 1;
-                }
-                if (pos != 0) {
-                    index = pos + '--' + index;
+                    index = 0;
+                    for (i=0; i<this.__include_promise__.length; i++) {
+                        includePromise = this.__include_promise__[i];
+                        if (_.isNumber(includePromise.len)) {
+                            index += includePromise.len;
+                        } else {
+                            index += 1;
+                        }
+                    }
+                    index += 1;
                 }
             }
             return index;
         },
-        includePromise: function(promise, includeKey) {
+        setIncludePromise: function(promise, includeKey) {
             if (!_.isEmpty(includeKey)) {
                 var map = {};
                 map.key = includeKey = _.trim(includeKey);
-                var pos = this.includePromisePos(map.key);
+                var pos = this.getIncludePromisePos(map.key);
                 if (pos < 0) {
                     map.promise = [promise];
+                    map.len = 1;
                     this.__include_promise__.push(map);
                 } else {
                     var oldMap = this.__include_promise__.splice(pos, 1)[0] || {};
@@ -10651,20 +10667,26 @@ define('yfjs/spa/util/template', [
                         oldMap.promise = [];
                     }
                     oldMap.promise.push(promise);
+                    oldMap.len = oldMap.promise.length;
                     this.__include_promise__.splice(pos, 0, oldMap);
                 }
             }
             return this;
         },
-        getIncludePromise: function(includeKey) {
+        getIncludePromises: function(includeKey) {
             var res, pos;
-            if (!_.isEmpty(includeKey) && (pos = this.includePromisePos(includeKey)) > -1) {
+            if (!_.isEmpty(includeKey) && (pos = this.getIncludePromisePos(includeKey)) > -1) {
                 res = this.__include_promise__[pos] || {};
                 res = res.promise;
             }
+            if (_.isNull(res)) {
+                res = [];
+            } else if (!_.isArray(res)) {
+                res = [res];
+            }
             return res;
         },
-        includePromisePos: function(includeKey) {
+        getIncludePromisePos: function(includeKey) {
             var pos = -1;
             for (var i=0; i<this.__include_promise__.length; i++) {
                 if (this.__include_promise__[i] && this.__include_promise__[i].key === includeKey) {
@@ -10680,9 +10702,12 @@ define('yfjs/spa/util/template', [
                     delete this.__include_promise__[k];
                 }
             } else {
-                includeKey = _.trim(includeKey);
-                if (includeKey.length && _.isArray(this.__include_promise__[includeKey])) {
-                    this.__include_promise__[includeKey].splice(0, this.__include_promise__[includeKey].length);
+                var pos = this.getIncludePromisePos(includeKey);
+                if (pos > -1) {
+                    var includePromise = this.__include_promise__[pos] || {};
+                    if (_.isArray(includePromise.promise)) {
+                        includePromise.promise.splice(0, includePromise.promise.length);
+                    }
                 }
             }
         },
@@ -10798,7 +10823,7 @@ define('yfjs/spa/util/template', [
 
             data = Template.normalizeData(data);
 
-            var bFilename = false;
+            var bFilename = false, bDomId = false;
 
             // source 作为 DOM 的 id 查找模板
             if (/^[_a-z][a-z\-_0-9—]*$/i.test(source)) {
@@ -10811,6 +10836,8 @@ define('yfjs/spa/util/template', [
                 }
 
                 if (elem) {
+
+                    bDomId = true;
 
                     filename = _.decodeIdToPath(source);
 
@@ -10837,10 +10864,24 @@ define('yfjs/spa/util/template', [
                 });
             }
 
-            // 不存在文件名时，计算内容的hash值作为文件名，用以include索引
-            // 注：此操作在计算大字符串时较耗时，故模板内容较多时应维护在一个文件内
             if (!bFilename) {
+                // 不存在文件名时，计算内容的hash值作为文件名，用以include索引
+                // 注：此操作在计算大字符串时较耗时，故模板内容较多时应维护在一个文件内
                 filename = _.hash(source);
+            } else if (!bDomId) {
+                // 去除文件名中的时间戳标记
+                var posQuery = filename.lastIndexOf("?");
+                if (posQuery > -1) {
+                    var filenameParam = filename.substring(posQuery + 1);
+                    filename = filename.substring(0, posQuery);
+                    var bustMatch = filenameParam.match(/bust=[^&]+/);
+                    if (bustMatch != null && bustMatch[0] != null) {
+                        filenameParam = filenameParam.substring(0, bustMatch.index) + filenameParam.substring(bustMatch.index + bustMatch[0].length);
+                    }
+                    if (filenameParam.length) {
+                        filename += ("?" + filenameParam);
+                    }
+                }
             }
 
             // source 不能对应 DOM 时，作为模板内容进行编译
@@ -10875,38 +10916,37 @@ define('yfjs/spa/util/template', [
                 args.push(rendered);
             }
 
-            var includeKey = filename, includePromise;
+            var includeKey = filename, includePromises;
 
-            var _includePromise = this.getIncludePromise(includeKey);
-            if (_.isArray(_includePromise)) {
-                for (var i=0; i<_includePromise.length; i++) {
-                    if (_.isPromise(_includePromise[i])) {
-                        includePromise = includePromise || [];
-                        includePromise.push(_includePromise[i]);
-                    }
+            var includePromisesTemp = this.getIncludePromises(includeKey);
+            for (var i=0; i<includePromisesTemp.length; i++) {
+                if (_.isPromise(includePromisesTemp[i])) {
+                    includePromises = includePromises || [];
+                    includePromises.push(includePromisesTemp[i]);
                 }
             }
+            includePromisesTemp = null;
 
-            if (_.isArray(includePromise) && includePromise.length) {
+            if (_.isArray(includePromises) && includePromises.length) {
                 if (_.isString(args[1])) {
                     var def = $.Deferred();
 
-                    (function(def, includeKey, includePromise, callback, args) {
-                        $.when.apply($.when, includePromise).done(function() {
+                    (function(def, includeKey, includePromises, callback, args) {
+                        $.when.apply($.when, includePromises).done(function() {
                             var renderErr = args[0],
                                 rendered = _.trim(args[1]);
 
                             var argsInclude = _.__aslice.call(arguments),
                                 errIncluded, resIncluded;
 
-                            if (includePromise.length > 1) {
+                            if (includePromises.length > 1) {
                                 $.each(argsInclude, function(i, arg) {
                                     if (!_.isUndef(arg[0])) {
-                                        errIncluded = errIncluded || new Array(includePromise.length);
+                                        errIncluded = errIncluded || new Array(includePromises.length);
                                         errIncluded[i] = arg[0];
                                     }
                                     if (!_.isUndef(arg[1])) {
-                                        resIncluded = resIncluded || new Array(includePromise.length);
+                                        resIncluded = resIncluded || new Array(includePromises.length);
                                         resIncluded[i] = arg[1];
                                     }
                                 });
@@ -10920,8 +10960,10 @@ define('yfjs/spa/util/template', [
                                 args[0] = renderErr;
                             }
 
+                            var i;
+
                             if (_.isArray(resIncluded)) {
-                                for (var i=0; i<resIncluded.length; i++) {
+                                for (i=0; i<resIncluded.length; i++) {
                                     renderIncluded(errIncluded ? errIncluded[i] : _.__undef__, resIncluded[i]);
                                 }
                             } else {
@@ -11006,29 +11048,41 @@ define('yfjs/spa/util/template', [
                                 }
                             }
 
-                            handleCallback(callback, args);
-
                             self.clearIncludePromise(includeKey);
 
                             def.resolve(args[1]);
+
+                            argsInclude = [errIncluded, resIncluded];
+
+                            handleCallback(callback, args, argsInclude);
+
+                            // ready included
+                            if (!argsInclude.__do_ready__ && context && _.isFunction(context.readyInclude)) {
+                                _.def(argsInclude, '__do_ready__', true);
+                                context.readyInclude.apply(context, argsInclude);
+                            }
                         });
-                    })(def, includeKey, includePromise, callback, args);
+                    })(def, includeKey, includePromises, callback, args);
 
                     return def.promise();
                 } else {
-                    handleCallback(callback, args);
                     this.clearIncludePromise(includeKey);
+                    handleCallback(callback, args);
                 }
             } else {
                 handleCallback(callback, args);
                 return _.isEmpty(renderErr) ? rendered : parseErrMsg(renderErr);
             }
 
-            function handleCallback(callback, args) {
+            function handleCallback(callback, args, argsInclude) {
                 if (_.isFunction(callback)) {
                     var context = self.getContext();
                     args = _.normalizeArrOption(args);
                     args = self.rendered.apply(self, args);
+                    args.push(data, source);
+                    if (_.notNull(argsInclude)) {
+                        args.push(argsInclude);
+                    }
                     try {
                         callback.apply(context || self, args);
                     } catch (e) {
@@ -13706,6 +13760,11 @@ define('yfjs/spa/util/widget', [
                 configurable: false
             });
 
+            // ready done state
+            _.def(this, '__ready_done__', false, {
+                configurable: true
+            });
+
             // load deferred
             _.def(this, '__deferred__', null, {
                 configurable: true
@@ -13990,9 +14049,14 @@ define('yfjs/spa/util/widget', [
 
             return def;
         },
+        doneReady: function() {
+            return !!this.__ready_done__;
+        },
         ready: function() {
             var widget = this.__widget__,
                 instance = this.getInstance();
+
+            _.def(this, '__ready_done__', true);
 
             var binds, i;
 
@@ -14081,6 +14145,8 @@ define('yfjs/spa/util/widget', [
 
             // close WebSocket
             this.ws.close();
+
+            _.def(this, '__ready_done__', false);
 
             return this;
         },
@@ -14181,6 +14247,8 @@ define('yfjs/spa/util/widget', [
             instance.__included__.splice(0, instance.__included__.length);
 
             _.def(instance, '__already__', false);
+
+            _.def(this, '__ready_done__', false);
 
             // update state
             var statechange = Widget.updateState.call(instance, 'destroyed');
@@ -14886,26 +14954,41 @@ define('yfjs/spa/util/widget', [
                 includeSelector = this.includeSelector();
             return $(includeSelector + ':last', $wrapper);
         },
-        readyInclude: function(wrapper) {
-            if (this.isDestroyed() || this.isDispose()) return this;
+        readyInclude: function(errIncluded, resIncluded) {
+            if (this.isDestroyed() || this.isDispose() || this.beforeState('ready')) return this;
 
-            var widget = this.__widget__,
-                widgetInclude = widget.INCLUDE_WIDGET;
+            var widget = this.__widget__;
 
-            var $includes = this.findInclude(wrapper), includes = [];
-            $includes.each(function() {
-                includes.push($(this).attr(widgetInclude.BIND_KEY));
-            });
+            if (_.isArray(resIncluded)) {
+                for (var i=0; i<resIncluded.length; i++) {
+                    readyIncluded.call(this, errIncluded ? errIncluded[i] : _.__undef__, resIncluded[i]);
+                }
+            } else {
+                readyIncluded.call(this, errIncluded, resIncluded);
+            }
 
-            var included;
-            for (var i=0; i<this.__included__.length; i++) {
-                included = this.__included__[i];
-                if (
-                    widget.instanceof(included)
-                    && _.inArray(included.getState('name'), includes) > -1
-                    && !included.getInstance().isDestroyed()
-                ) {
-                    included.ready();
+            function readyIncluded(errIncluded, resIncluded) {
+                if (_.isNull(resIncluded) || this.isDestroyed() || this.isDispose()) return this;
+
+                var launcher = resIncluded.context;
+
+                if (widget.instanceof(launcher)) {
+                    var instance = launcher.getInstance();
+
+                    var $container;
+                    try {
+                        $container = $(instance.container);
+                    } catch (e) {
+                        $container = null;
+                    }
+
+                    if ($container && $container.length) {
+                        if (!launcher.doneReady()) {
+                            launcher.readyStyle($container).ready();
+                        }
+                    } else {
+                        _.requestAnimationFrame.call(this, readyIncluded, _.__aslice.call(arguments), 30);
+                    }
                 }
             }
 
@@ -15380,8 +15463,10 @@ define('yfjs/spa/util/widget', [
 
                 def.done(function(err, htmlText, data, source) {
                     var args = _.__aslice.call(arguments);
-                    _.requestAnimationFrame(function(err, htmlText, data, source) {
+                    _.requestAnimationFrame.call(self, function(err, htmlText, data, source, argsInclude) {
                         err = _.setPropsRecursive(err, props);
+
+                        var self = this;
 
                         self.addError(err);
 
@@ -15404,6 +15489,11 @@ define('yfjs/spa/util/widget', [
 
                         if (!_.isEmpty(errs) && self.afterState('beforeLoad')) {
                             widget.Event.trigger('Error', errs);
+                        }
+
+                        // ready included
+                        if (_.isArray(argsInclude)) {
+                            self.readyInclude.apply(self, argsInclude);
                         }
                     }, args);
                 });
@@ -15453,12 +15543,13 @@ define('yfjs/spa/util/widget', [
                     argsTpl = argsTpl.slice(1);
 
                     if (!_.isUndef(argsTpl[0])) {
-                        self.template.render(argsTpl[0], renderData, argsTpl[1], function(err2, htmlText) {
+                        self.template.render(argsTpl[0], renderData, argsTpl[1], function(err2, htmlText, data, source, argsInclude) {
                             if (err2) {
                                 self.removeError(err2);
                                 err = _.concatError(err, err2);
                             }
-                            def.resolve(err, htmlText, filteredData, argsTpl[0]);
+                            argsInclude && _.def(argsInclude, '__do_ready__', true);
+                            def.resolve(err, htmlText, filteredData, argsTpl[0], argsInclude);
                         });
                     } else {
                         def.resolve(err, _.__undef__, filteredData, argsTpl[0]);
@@ -15952,6 +16043,8 @@ define('yfjs/spa/util/widget', [
             return emptyStr;
         }
 
+        var self = this;
+
         var _path = args[0], _params, _mode;
 
         if (args.length > 2) {
@@ -16066,16 +16159,21 @@ define('yfjs/spa/util/widget', [
             configurable: false
         });
 
-        this.__includes__.push(state);
+        var pos = inIncludes(state);
+        if (pos > -1) {
+            this.__includes__.splice(pos, 1, state);
+        } else {
+            this.__includes__.push(state);
+        }
 
         if (_mode === "include") {
-            this.template.includePromise(
+            this.template.setIncludePromise(
                 widget.include(state, this.__included__),
                 includeKey
             );
             return '{{#' + bodyKey + '}}';
         } else {
-            this.template.includePromise(null, includeKey);
+            this.template.setIncludePromise(null, includeKey);
             var cssClass = widget.PREFIX_CSS_INCLUDE + _.stylePathId(state.name);
             if (_mode === "lazy") {
                 var loadingOpt = this.get('loading') || {}, loadingHtml;
@@ -16089,6 +16187,23 @@ define('yfjs/spa/util/widget', [
             } else {
                 return widget.wrap(state.name, containerId)('', cssClass);
             }
+        }
+
+        function inIncludes(state) {
+            var pos = -1;
+
+            if (_.isNull(state)) return pos;
+
+            var stateInclude;
+            for (var i=0; i<self.__includes__.length; i++) {
+                stateInclude = self.__includes__[i] || {};
+                if (stateInclude.id === state.id) {
+                    pos = i;
+                    break;
+                }
+            }
+
+            return pos;
         }
     }
 
